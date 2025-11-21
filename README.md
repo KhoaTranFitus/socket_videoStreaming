@@ -14,3 +14,7 @@ Enter 1 to run server
 <p style="font-size:18px;">
 Enter 2 to run client
 </p>
+<p style="font-size:18px;">
+Enter 3 to exit
+</p>
+
