@@ -1,255 +1,399 @@
+# Client.py
 from tkinter import *
 import tkinter.messagebox
-from PIL import Image, ImageTk
-import socket, threading, sys, traceback, os
+import socket, threading, io
 
 from RtpPacket import RtpPacket
+from hd_handler import HDHandler
+from cache_manager import CacheManager
+from renderer import Renderer
 
-CACHE_FILE_NAME = "cache-"
-CACHE_FILE_EXT = ".jpg"
+TARGET_WIDTH = 640
+TARGET_HEIGHT = 360
+
 
 class Client:
-	INIT = 0
-	READY = 1
-	PLAYING = 2
-	state = INIT
-	
-	SETUP = "SETUP"
-	PLAY = "PLAY"
-	PAUSE = "PAUSE"
-	TEARDOWN = "TEARDOWN"
-	
-	# Initiation..
-	def __init__(self, master, serveraddr, serverport, rtpport, filename):
-		self.master = master
-		self.master.protocol("WM_DELETE_WINDOW", self.handler) # Handler when the user closes the window 	
-		self.createWidgets()
-		self.serverAddr = serveraddr
-		self.serverPort = int(serverport)
-		self.rtpPort = int(rtpport)
-		self.fileName = filename
-		self.rtspSeq = 0
-		self.sessionId = 0
-		self.requestSent = -1
-		self.teardownAcked = 0
-		self.connectToServer()
-		self.frameNbr = 0
-		
-	def createWidgets(self):
-		"""Build GUI."""
-		# Create Setup button
-		self.setup = Button(self.master, width=20, padx=3, pady=3)
-		self.setup["text"] = "Setup"
-		self.setup["command"] = self.setupMovie	
-		self.setup.grid(row=1, column=0, padx=2, pady=2)
-		
-		# Create Play button		
-		self.start = Button(self.master, width=20, padx=3, pady=3)
-		self.start["text"] = "Play"
-		self.start["command"] = self.playMovie
-		self.start.grid(row=1, column=1, padx=2, pady=2)
-		
-		# Create Pause button			
-		self.pause = Button(self.master, width=20, padx=3, pady=3)
-		self.pause["text"] = "Pause"
-		self.pause["command"] = self.pauseMovie
-		self.pause.grid(row=1, column=2, padx=2, pady=2)
-		
-		# Create Teardown button
-		self.teardown = Button(self.master, width=20, padx=3, pady=3)
-		self.teardown["text"] = "Teardown"
-		self.teardown["command"] =  self.exitClient
-		self.teardown.grid(row=1, column=3, padx=2, pady=2)
-		
-		# Create a label to display the movie
-		self.label = Label(self.master, height=19)
-		self.label.grid(row=0, column=0, columnspan=4, sticky=W+E+N+S, padx=5, pady=5) 
-	
-	def setupMovie(self):
-		"""Setup button handler."""
-		if self.state == self.INIT:
-			self.sendRtspRequest(self.SETUP)
-	
-	def exitClient(self):
-		"""Teardown button handler."""
-		self.sendRtspRequest(self.TEARDOWN)		
-		self.master.destroy() # Close the gui window
-		os.remove(CACHE_FILE_NAME + str(self.sessionId) + CACHE_FILE_EXT) # Delete the cache image from video
+    # RTSP states
+    INIT = 0
+    READY = 1
+    PLAYING = 2
 
-	def pauseMovie(self):
-		"""Pause button handler."""
-		if self.state == self.PLAYING:
-			self.sendRtspRequest(self.PAUSE)
-	
-	def playMovie(self):
-		"""Play button handler."""
-		if self.state == self.READY:
-			# Create a new thread to listen for RTP packets
-			threading.Thread(target=self.listenRtp).start()
-			self.playEvent = threading.Event()
-			self.playEvent.clear()
-			self.sendRtspRequest(self.PLAY)
-	
-	def listenRtp(self):		
-		"""Listen for RTP packets."""
-		while True:
-			try:
-				data = self.rtpSocket.recv(20480) # maximum rtp packet size
-				if data:
-					# create a new RTP packet object from the received RTP packet and decode it (at RtpPacket.py)
-					rtpPacket = RtpPacket()
-					rtpPacket.decode(data)
-					
-					currFrameNbr = rtpPacket.seqNum()
-					print("Current Seq Num: " + str(currFrameNbr))
-										
-					if currFrameNbr > self.frameNbr: # Discard the late packet
-						self.frameNbr = currFrameNbr
-						self.updateMovie(self.writeFrame(rtpPacket.getPayload()))
-			except:
-				# Stop listening upon requesting PAUSE or TEARDOWN
-				if self.playEvent.isSet(): 
-					break
-				
-				# Upon receiving ACK for TEARDOWN request,
-				# close the RTP socket
-				if self.teardownAcked == 1:
-					self.rtpSocket.shutdown(socket.SHUT_RDWR)
-					self.rtpSocket.close()
-					break
-					
-	def writeFrame(self, data):
-		"""Write the received frame to a temp image file. Return the image file."""
-		cachename = CACHE_FILE_NAME + str(self.sessionId) + CACHE_FILE_EXT
-		file = open(cachename, "wb")
-		file.write(data)
-		file.close()
-		
-		return cachename
-	
-	def updateMovie(self, imageFile):
-		"""Update the image file as video frame in the GUI."""
-		photo = ImageTk.PhotoImage(Image.open(imageFile))
-		self.label.configure(image = photo, height=288) 
-		self.label.image = photo
-		
-	def connectToServer(self):
-		"""Connect to the Server. Start a new RTSP/TCP session."""
-		self.rtspSocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-		try:
-			self.rtspSocket.connect((self.serverAddr, self.serverPort))
-		except:
-			tkinter.MessageBox.showwarning('Connection Failed', 'Connection to \'%s\' failed.' %self.serverAddr)
-	
-	def sendRtspRequest(self, requestCode):
-		"""Send RTSP request to the server."""	
-		# Setup request
-		print(f"sendRtspRequest: {requestCode}")
-		if requestCode == self.SETUP and self.state == self.INIT:
-			threading.Thread(target=self.recvRtspReply).start()
-			# Update RTSP sequence number.
-			self.rtspSeq += 1
-			# Write the RTSP request to be sent.
-			request = f"{self.SETUP} {self.fileName} RTSP/1.0\nCSeq: {self.rtspSeq}\nTransport: RTP/UDP; client_port= {self.rtpPort}"
-			# Keep track of the sent request.
-			self.requestSent = self.SETUP
-		# Play request
-		elif requestCode == self.PLAY and self.state == self.READY:
-			# Update RTSP sequence number.
-			self.rtspSeq += 1
-			# Write the RTSP request to be sent.
-			request = f"{self.PLAY} {self.fileName} RTSP/1.0\nCSeq: {self.rtspSeq}\nSession: {self.sessionId}"
-			# Keep track of the sent request.
-			self.requestSent = self.PLAY
-		# Pause request
-		elif requestCode == self.PAUSE and self.state == self.PLAYING:
-			# Update RTSP sequence number.
-			self.rtspSeq += 1
-			# Write the RTSP request to be sent.
-			request = f"{self.PAUSE} {self.fileName} RTSP/1.0\nCSeq: {self.rtspSeq}\nSession: {self.sessionId}"
-			# Keep track of the sent request.
-			self.requestSent = self.PAUSE
-		# Teardown request
-		elif requestCode == self.TEARDOWN and not self.state == self.INIT:
-			# Update RTSP sequence number.
-			self.rtspSeq += 1
-			# Write the RTSP request to be sent.
-			request = f"{self.TEARDOWN} {self.fileName} RTSP/1.0\nCSeq: {self.rtspSeq}\nSession: {self.sessionId}"
-			# Keep track of the sent request.
-			self.requestSent = self.TEARDOWN
-		else:
-			return
-		# Send the RTSP request using rtspSocket.
-		self.rtspSocket.send(request.encode()) #send request to the server
-		print('\nData sent:\n' + request)
-	
-	def recvRtspReply(self):
-		"""Receive RTSP reply from the server."""
-		while True:
-			reply = self.rtspSocket.recv(1024)
-			
-			if reply: 
-				self.parseRtspReply(reply.decode("utf-8"))
-			
-			# Close the RTSP socket upon requesting Teardown
-			if self.requestSent == self.TEARDOWN:
-				self.rtspSocket.shutdown(socket.SHUT_RDWR)
-				self.rtspSocket.close()
-				break
-	
-	def parseRtspReply(self, data):
-		"""Parse the RTSP reply from the server."""
-		lines = data.split('\n')
-		seqNum = int(lines[1].split(' ')[1])
-		
-		# Process only if the server reply's sequence number is the same as the request's
-		if seqNum == self.rtspSeq:
-			session = int(lines[2].split(' ')[1])
-			# New RTSP session ID
-			if self.sessionId == 0:
-				self.sessionId = session
-			
-			# Process only if the session ID is the same
-			if self.sessionId == session:
-				if int(lines[0].split(' ')[1]) == 200: 
-					if self.requestSent == self.SETUP:
-						#-------------
-						# TO COMPLETE
-						#-------------
-						# Update RTSP state.
-						self.state = self.READY
-						# Open RTP port.
-						self.openRtpPort() 
-					elif self.requestSent == self.PLAY:
-						self.state = self.PLAYING
-					elif self.requestSent == self.PAUSE:
-						self.state = self.READY
-						# The play thread exits. A new thread is created on resume.
-						self.playEvent.set()
-					elif self.requestSent == self.TEARDOWN:
-						self.state = self.INIT
-						# Flag the teardownAcked to close the socket.
-						self.teardownAcked = 1 
-	
-	def openRtpPort(self):
-		"""Open RTP socket binded to a specified port."""
-		#-------------
-		# TO COMPLETE
-		#-------------
-		# Create a new datagram socket to receive RTP packets from the server
-		self.rtpSocket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-		# Set the timeout value of the socket to 0.5sec
-		self.rtpSocket.settimeout(0.5) # set timeout value to 0.5s to avoid infinite blocking while waiting for the RTP packets
-		try:
-			# Bind the socket to the address using the RTP port given by the client user
-			self.rtpSocket.bind(('', self.rtpPort))
-		except:
-			tkinter.MessageBox.showwarning('Unable to Bind', 'Unable to bind PORT=%d' %self.rtpPort)
+    # RTSP commands
+    SETUP = "SETUP"
+    PLAY = "PLAY"
+    PAUSE = "PAUSE"
+    TEARDOWN = "TEARDOWN"
 
-	def handler(self):
-		"""Handler on explicitly closing the GUI window."""
-		self.pauseMovie()
-		if tkinter.MessageBox.askokcancel("Quit?", "Are you sure you want to quit?"):
-			self.exitClient()
-		else: # When the user presses cancel, resume playing.
-			self.playMovie()
+    def __init__(self, master, serveraddr, serverport, rtpport, filename):
+        self.master = master
+        self.master.protocol("WM_DELETE_WINDOW", self.handler)
+
+        # network info
+        self.serverAddr = serveraddr
+        self.serverPort = int(serverport)
+        self.rtpPort = int(rtpport)
+        self.rtpPort2 = self.rtpPort + 2
+        self.fileName = filename
+
+        # RTSP parameters
+        self.rtspSeq = 0
+        self.sessionId = 0
+        self.state = self.INIT
+        self.requestSent = -1
+        
+        self.isPaused = False
+        self.maxCacheSize = 200  # frames
+
+        # playback state
+        self.frameNbr = 0
+        self.totalFrames = 0
+ 
+        self.latestReceivedFrame = 0
+        self.bufferWarmed = False
+
+        # modules
+        self.hdMode = False
+        self.hd = HDHandler()
+        self.cache = CacheManager(max_size=200)        
+        # GUI
+        self.createWidgets()
+
+        # Renderer module
+        self.renderer = Renderer(self.canvas, TARGET_WIDTH, TARGET_HEIGHT)
+        self.canvas.bind("<Configure>", self.renderer.on_resize)
+
+        # RTSP TCP socket
+        self.connectToServer()
+
+    # ============================================================
+    # GUI
+    # ============================================================
+
+    def createWidgets(self):
+        # control buttons
+        self.setupB = Button(self.master, width=20, text="Setup", command=self.setupMovie)
+        self.setupB.grid(row=1, column=0, padx=2, pady=2)
+
+        self.playB = Button(self.master, width=20, text="Play", command=self.playMovie)
+        self.playB.grid(row=1, column=1, padx=2, pady=2)
+
+        self.pauseB = Button(self.master, width=20, text="Pause", command=self.pauseMovie)
+        self.pauseB.grid(row=1, column=2, padx=2, pady=2)
+
+        self.teardownB = Button(self.master, width=20, text="Teardown", command=self.exitClient)
+        self.teardownB.grid(row=1, column=3, padx=2, pady=2)
+
+        # HD toggle
+        self.hdButton = Button(self.master, width=20, text="HD Mode: OFF", command=self.toggleHD)
+        self.hdButton.grid(row=1, column=4, padx=2, pady=2)
+
+        # video canvas
+        self.canvas = Canvas(self.master, width=TARGET_WIDTH, height=TARGET_HEIGHT,
+                             bg="black", highlightthickness=0)
+        self.canvas.grid(row=0, column=0, columnspan=5, padx=5, pady=5)
+
+        # progress bar (cache/live)
+        self.progressHeight = 16
+        self.progressFrame = Frame(self.master, height=self.progressHeight)
+        self.progressFrame.grid(row=2, column=0, columnspan=5, sticky="we", padx=5, pady=4)
+        self.progressFrame.grid_propagate(False)
+
+        self.progressCanvas = Canvas(self.progressFrame, height=self.progressHeight,
+                                     bg="#1a1a1a", highlightthickness=0)
+        self.progressCanvas.place(relx=0, rely=0, relwidth=1, relheight=1)
+
+        self.cacheBarId = self.progressCanvas.create_rectangle(0, 0, 0, self.progressHeight,
+                                                               fill="#e74c3c", width=0)
+        self.liveBarId = self.progressCanvas.create_rectangle(0, 0, 0, self.progressHeight,
+                                                              fill="#00ff00", width=0)
+
+    # ============================================================
+    # BUTTON HANDLERS
+    # ============================================================
+    def get_state_text(self):
+        if self.state == self.INIT:
+            return "INIT"
+        if self.state == self.READY:
+            return "READY"
+        if self.state == self.PLAYING:
+            return "PLAYING"
+        return "UNKNOWN"
+
+    def toggleHD(self):
+        self.hdMode = not self.hdMode
+        self.hdButton["text"] = "HD Mode: ON" if self.hdMode else "HD Mode: OFF"
+        print("[Client] HD Mode =", self.hdMode)
+
+    def setupMovie(self):
+        print(f"[STATE] Setup button pressed. State = {self.get_state_text()}")
+
+        if self.state == self.INIT:
+            self.sendRtspRequest(self.SETUP)
+
+    def playMovie(self):
+        print(f"[STATE] Setup button pressed. State = {self.get_state_text()}")
+
+        if self.state == self.READY:
+            self.playEvent = threading.Event()
+            self.isPaused = False
+            # start RTP listeners
+
+            if not hasattr(self, "rtpThread"):
+                self.rtpThreads = []
+                for sock in self.rtpSockets:
+                    t = threading.Thread(target=self.listenRtp, args=(sock,))
+                    t.daemon = True
+                    t.start()
+                    self.rtpThreads.append(t)
+
+            self.sendRtspRequest(self.PLAY)
+            self.startPlayerLoop()
+
+    def pauseMovie(self):
+        print(f"[STATE] Pause button pressed. State = {self.get_state_text()}")
+
+        self.sendRtspRequest(self.PAUSE)
+        self.isPaused = True
+        self.playEvent.set()  # stop RTP listener threads
+
+    def exitClient(self):
+        print(f"[STATE] Teardown button pressed. State = {self.get_state_text()}")
+        if self.state != self.INIT:
+            self.sendRtspRequest(self.TEARDOWN)
+        if hasattr(self, "playEvent"):
+            self.playEvent.set()
+            
+        self.master.destroy()
+        self.rtspSocket.close()
+
+    def handler(self):
+        self.exitClient()
+
+    # ============================================================
+    # RTSP CONNECTION
+    # ============================================================
+
+    def connectToServer(self):
+        self.rtspSocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            self.rtspSocket.connect((self.serverAddr, self.serverPort))
+        except:
+            tkinter.messagebox.showwarning("Connection Failed",
+                                           f"Cannot connect to {self.serverAddr}")
+
+    # ============================================================
+    # SEND RTSP
+    # ============================================================
+
+    def sendRtspRequest(self, code):
+        print(f"[RTSP] Sending {code}")
+
+        self.rtspSeq += 1
+        request = ""
+
+        if code == self.SETUP and self.state == self.INIT:
+            request = (
+                f"SETUP {self.fileName} RTSP/1.0\n"
+                f"CSeq: {self.rtspSeq}\n"
+                f"Transport: RTP/UDP; client_port= {self.rtpPort}\n"
+                f"Prefer: {'HD' if self.hdMode else 'SD'}"
+            )
+            self.requestSent = self.SETUP
+            threading.Thread(target=self.recvRtspReply).start()
+
+        elif code in (self.PLAY, self.PAUSE, self.TEARDOWN):
+            request = (
+                f"{code} {self.fileName} RTSP/1.0\n"
+                f"CSeq: {self.rtspSeq}\n"
+                f"Session: {self.sessionId}"
+            )
+            self.requestSent = code
+
+        self.rtspSocket.send(request.encode())
+        print("[RTSP Request Sent]\n", request)
+
+    # ============================================================
+    # RECEIVE RTSP REPLY
+    # ============================================================
+
+    def recvRtspReply(self):
+        while True:
+            try:
+                reply = self.rtspSocket.recv(1024)
+                if reply:
+                    self.parseRtspReply(reply.decode())
+                if self.requestSent == self.TEARDOWN:
+                    self.rtspSocket.close()
+                    break
+            except:
+                break
+
+    def parseRtspReply(self, data):
+        lines = data.split("\n")
+        if len(lines) < 3: 
+            return
+
+        status = int(lines[0].split(" ")[1])
+        seq = int(lines[1].split(" ")[1])
+        session = int(lines[2].split(" ")[1])
+
+        if seq != self.rtspSeq:
+            return
+
+        if self.sessionId == 0:
+            self.sessionId = session
+
+        if self.sessionId != session:
+            return
+
+        for line in lines[3:]:
+            if line.startswith("Frames"):
+                self.totalFrames = int(line.split(" ")[1])
+
+        if status == 200:
+            if self.requestSent == self.SETUP:
+                self.state = self.READY
+                self.openRtpPort()
+                print("[RTSP] SETUP OK")
+
+            elif self.requestSent == self.PLAY:
+                self.state = self.PLAYING
+                print("[RTSP] PLAY OK")
+
+            elif self.requestSent == self.PAUSE:
+                self.state = self.READY
+                self.isPaused = True
+                print("[RTSP] PAUSE OK")
+
+            elif self.requestSent == self.TEARDOWN:
+                self.state = self.INIT
+                self.playEvent.set()
+                print("[RTSP] TEARDOWN OK")
+
+    # ============================================================
+    # RTP / LISTEN
+    # ============================================================
+
+    def openRtpPort(self):
+        self.rtpSockets = []
+        for port in (self.rtpPort, self.rtpPort2):
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                sock.bind(('', port))
+                sock.settimeout(0.01)
+                self.rtpSockets.append(sock)
+                print(f"[RTP] Bound to port {port}")
+            except:
+                tkinter.messagebox.showwarning("RTP Bind Failed", f"Cannot bind port {port}")
+
+    def listenRtp(self, sock):
+        expectedFrame = 1
+        frameBuffer = bytearray()
+
+        while True:
+            if hasattr(self, "playEvent") and self.playEvent.is_set():
+                break
+
+            try:
+                data = sock.recv(20480)
+            except socket.timeout:
+                continue
+            except:
+                break
+
+            if not data:
+                continue
+
+            rtp = RtpPacket()
+            rtp.decode(data)
+            frameNum = rtp.seqNum()
+            self.lastestRenderedFrame = frameNum
+            payload = rtp.getPayload()
+            marker = rtp.marker()
+
+            if self.isPaused:
+                cache_limit = int(self.maxCacheSize*0.10)
+                if self.cache.size() >= cache_limit:
+                    continue  # skip caching when paused and cache is sufficient
+            # frame jump → reset buffer
+            if frameNum != expectedFrame:
+                frameBuffer = bytearray()
+                expectedFrame = frameNum
+
+            if not self.hdMode:
+                # SD mode: one full frame
+                if self.cache.size() >= self.maxCacheSize:
+                    continue  # skip if cache full
+                frameBuffer.extend(payload)
+                if marker == 1:
+                    if self.hd.is_valid_jpeg(frameBuffer):
+                        self.latestReceivedFrame = frameNum
+                        self.cache.push_frame(frameNum, bytes(frameBuffer))
+                    frameBuffer = bytearray()
+                    expectedFrame = frameNum + 1
+
+            else:
+                # HD mode
+                if self.cache.size() >= self.maxCacheSize:
+                    continue  # skip if cache full
+                frame = self.hd.handle_hd_payload(frameNum, payload, marker)
+                if frame:
+                    self.latestReceivedFrame = frameNum
+                    self.cache.push_frame(frameNum, frame)
+                    expectedFrame = frameNum + 1
+
+    # ============================================================
+    # PLAYER LOOP
+    # ============================================================
+
+    def startPlayerLoop(self):
+        # Only buffer before the very first frame; do not stall once playback is running
+        if not self.bufferWarmed:
+            if self.cache.size() < 20 and self.frameNbr < self.totalFrames:
+                self.master.after(30, self.startPlayerLoop)
+                return
+            self.bufferWarmed = True
+        if self.state == self.PLAYING and not self.isPaused:
+            item = self.cache.pop_frame()
+            if item:
+                frameNum, frameData = item
+                try:
+                    photo = self.renderer.build_photo(frameData)
+                    self.renderer.render(photo)
+                    self.frameNbr = frameNum
+                    self.updateProgress(frameNum)
+                except Exception as e:
+                    print("[Render Error]", e)
+
+        self.master.after(30, self.startPlayerLoop)
+
+    # ============================================================
+    # PROGRESS BAR
+    # ============================================================
+
+    def updateProgress(self, frameNum):
+        if self.totalFrames <= 0:
+            return
+        
+        width = self.progressCanvas.winfo_width()
+        
+        # live frame
+        live_val = frameNum
+
+        # real cache frame = max frame inside cache, not live+size
+        cache_val = min(self.latestReceivedFrame, self.totalFrames)
+        print(
+            f"[PROGRESS] live={frameNum}, "
+            f"latestReceived={self.latestReceivedFrame}, "
+            f"cacheSize={self.cache.size()}, "
+            f"cacheVal={cache_val}/{self.totalFrames}"
+        )
+        live_frac = live_val / self.totalFrames
+        cache_frac = cache_val / self.totalFrames
+
+        self.progressCanvas.coords(
+            self.liveBarId, 0, 0, width * live_frac, self.progressHeight
+        )
+        self.progressCanvas.coords(
+            self.cacheBarId, 0, 0, width * cache_frac, self.progressHeight
+        )
