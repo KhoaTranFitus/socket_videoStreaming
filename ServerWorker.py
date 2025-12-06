@@ -153,10 +153,10 @@ class ServerWorker:
 		while True:
 			if self.clientInfo['event'].isSet():
 				break
-
+			# print ("Sending frame number:", self.clientInfo['videoStream'].frameNbr())
+			print("Sending frame number:", self.clientInfo['videoStream'].frameNbr())
 			data = self.clientInfo['videoStream'].nextFrame()
-			# print all clientInfo keys 
-			print("clientInfo keys:", self.clientInfo.keys())
+
 			if data:
 				frameNumber = self.clientInfo['videoStream'].frameNbr()
 				try:
@@ -166,7 +166,10 @@ class ServerWorker:
 					self.clientInfo['rtpSocket'].sendto(packet, (address, port))
 				except:
 					print("Connection Error")
-
+			else:
+				print("[SERVER] End of video reached. Stopping RTP stream.")
+				self.clientInfo['event'].set()
+				break
 			# Pace the stream to target fps but stay responsive to pause
 			next_send += frame_interval
 			wait_time = max(0, next_send - time())
@@ -187,18 +190,23 @@ class ServerWorker:
 			# Send exactly one frame per loop iteration
 			frame = self.clientInfo['videoStream'].nextFrame()
 			if not frame:
+				print("[SERVER] End of HD video reached. Stopping RTP stream.")
+				self.clientInfo['event'].set()
 				break
 
 			if self.DOWNSCALE_HD:
 				frame = self.downscale_frame(frame)
 
 			frameNum = self.clientInfo['videoStream'].frameNbr()
-
-			chunks = [frame[i:i+MAX_RTP_PAYLOAD]
-						for i in range(0, len(frame), MAX_RTP_PAYLOAD)]
+			chunks = [
+				frame[i:i + MAX_RTP_PAYLOAD]
+				for i in range(0, len(frame), MAX_RTP_PAYLOAD)]
 			total_chunks = len(chunks)
+			print(f"[SERVER] Sending HD frame: {frameNum} ({total_chunks} chunks)")
 
 			for idx, chunk in enumerate(chunks):
+				if self.clientInfo['event'].isSet():
+					return
 				try:
 					marker = 1 if idx == len(chunks) - 1 else 0  # mark the last packet of the frame
 					prefixed_chunk = idx.to_bytes(2, "big") + total_chunks.to_bytes(2, "big") + chunk

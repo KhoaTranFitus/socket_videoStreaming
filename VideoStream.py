@@ -2,7 +2,7 @@
 class VideoStream:
     def __init__(self, filename, mode="normal"):
         self.filename = filename
-        self.file = open(filename, 'rb')
+        self.file = open(filename, 'rb') # open file in  read binary mode
         self.frameNum = 0
         self.mode = mode  # "normal" or "hd"
         self.totalFrames = self._count_frames()
@@ -62,6 +62,8 @@ class VideoStream:
     # MODE SELECTOR
     # ==========================
     def nextFrame(self):
+        if self.frameNum >= self.totalFrames:
+            return None
         self.frameNum += 1
 
         if self.mode == "hd":
