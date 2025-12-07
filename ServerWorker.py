@@ -1,5 +1,5 @@
 from random import randint
-from time import time
+from time import time, sleep
 import sys, traceback, threading, socket, io
 from PIL import Image
 
@@ -148,13 +148,13 @@ class ServerWorker:
 	def sendRtp(self):
 		"""Send RTP packets over UDP (single packet per frame)."""
 		# Target ~60 fps to speed up playback
-		frame_interval = 1/30
+		frame_interval = 0.03
 		next_send = time()
 		while True:
 			if self.clientInfo['event'].isSet():
 				break
 			# print ("Sending frame number:", self.clientInfo['videoStream'].frameNbr())
-			print("Sending frame number:", self.clientInfo['videoStream'].frameNbr())
+			# print("Sending frame number:", self.clientInfo['videoStream'].frameNbr())
 			data = self.clientInfo['videoStream'].nextFrame()
 
 			if data:
@@ -175,12 +175,13 @@ class ServerWorker:
 			wait_time = max(0, next_send - time())
 			if self.clientInfo['event'].wait(wait_time):
 				break
+		print("[SERVER] RTP stream paused/stopped")
 
 
 	def sendRtpHD(self):
 		"""Send RTP packets for HD video (supports fragmentation)."""
 		MAX_RTP_PAYLOAD = 1200  # stay under MTU
-		frame_interval = 0.05  # send as fast as possible
+		frame_interval = 0.02  # send as fast as possible
 		next_send = time()
 
 		while True:
@@ -202,7 +203,7 @@ class ServerWorker:
 				frame[i:i + MAX_RTP_PAYLOAD]
 				for i in range(0, len(frame), MAX_RTP_PAYLOAD)]
 			total_chunks = len(chunks)
-			print(f"[SERVER] Sending HD frame: {frameNum} ({total_chunks} chunks)")
+			# print(f"[SERVER] Sending HD frame: {frameNum} ({total_chunks} chunks)")
 
 			for idx, chunk in enumerate(chunks):
 				if self.clientInfo['event'].isSet():
@@ -217,6 +218,7 @@ class ServerWorker:
 					else:
 						port = self.clientInfo['rtpPort2']
 					self.clientInfo['rtpSocket'].sendto(packet, (address, port))
+					sleep(0.001) # pace packets to avoid burst loss
 				except:
 					print("Connection Error (HD)")
 					break
@@ -229,6 +231,7 @@ class ServerWorker:
 			else:
 				if self.clientInfo['event'].wait(0.001):
 					break
+		print("[SERVER] HD RTP stream paused/stopped")
 
 	def makeRtp(self, payload, frameNbr, marker=0):
 		"""RTP-packetize the video data."""
