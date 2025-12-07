@@ -1,7 +1,7 @@
 # Client.py
 from tkinter import *
 import tkinter.messagebox
-import socket, threading, io
+import socket, threading, io, time
 
 from RtpPacket import RtpPacket
 from hd_handler import HDHandler
@@ -42,7 +42,7 @@ class Client:
         self.requestSent = -1
         
         self.isPaused = False
-        self.maxCacheSize = 200  # frames
+        self.maxCacheSize = 2000  # frames (increased for buffering)
 
         # playback state
         self.frameNbr = 0
@@ -50,11 +50,13 @@ class Client:
  
         self.latestReceivedFrame = 0
         self.bufferWarmed = False
+        self.playerRunning = False
 
         # modules
         self.hdMode = False
         self.hd = HDHandler()
-        self.cache = CacheManager(max_size=200)        
+        self.cache = CacheManager(max_size=self.maxCacheSize)        
+        # GUI        
         # GUI
         self.createWidgets()
 
@@ -131,14 +133,17 @@ class Client:
             self.sendRtspRequest(self.SETUP)
 
     def playMovie(self):
-        print(f"[STATE] Setup button pressed. State = {self.get_state_text()}")
+        print(f"[STATE] Play button pressed. State = {self.get_state_text()}")
+
+        if self.isPaused:
+            self.isPaused = False
 
         if self.state == self.READY:
             self.playEvent = threading.Event()
             self.isPaused = False
             # start RTP listeners
 
-            if not hasattr(self, "rtpThread"):
+            if not hasattr(self, "rtpThreads"):
                 self.rtpThreads = []
                 for sock in self.rtpSockets:
                     t = threading.Thread(target=self.listenRtp, args=(sock,))
@@ -147,14 +152,13 @@ class Client:
                     self.rtpThreads.append(t)
 
             self.sendRtspRequest(self.PLAY)
-            self.startPlayerLoop()
+            if not self.playerRunning:
+                self.startPlayerLoop()
 
     def pauseMovie(self):
         print(f"[STATE] Pause button pressed. State = {self.get_state_text()}")
-
-        self.sendRtspRequest(self.PAUSE)
+        # Only pause locally, let RTP threads continue buffering until limit
         self.isPaused = True
-        self.playEvent.set()  # stop RTP listener threads
 
     def exitClient(self):
         print(f"[STATE] Teardown button pressed. State = {self.get_state_text()}")
@@ -162,7 +166,8 @@ class Client:
             self.sendRtspRequest(self.TEARDOWN)
         if hasattr(self, "playEvent"):
             self.playEvent.set()
-            
+        
+        self.playerRunning = False
         self.master.destroy()
         self.rtspSocket.close()
 
@@ -278,6 +283,7 @@ class Client:
         self.rtpSockets = []
         for port in (self.rtpPort, self.rtpPort2):
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1 << 20) # 1MB buffer
             try:
                 sock.bind(('', port))
                 sock.settimeout(0.01)
@@ -312,9 +318,15 @@ class Client:
             marker = rtp.marker()
 
             if self.isPaused:
-                cache_limit = int(self.maxCacheSize*0.10)
-                if self.cache.size() >= cache_limit:
-                    continue  # skip caching when paused and cache is sufficient
+                # Buffering logic: if paused, keep buffering until 10% of total frames
+                limit = int(self.totalFrames * 0.05)
+                if self.cache.size() >= limit:
+                    if self.state == self.PLAYING and self.requestSent != self.PAUSE:
+                        print(f"[BUFFER] Cache reached 10% ({self.cache.size()}/{limit}), sending PAUSE")
+                        self.sendRtspRequest(self.PAUSE)
+                    
+                    time.sleep(0.02) # Avoid busy wait
+                    continue  # stop reading socket
             # frame jump → reset buffer
             if frameNum != expectedFrame:
                 frameBuffer = bytearray()
@@ -347,6 +359,7 @@ class Client:
     # ============================================================
 
     def startPlayerLoop(self):
+        self.playerRunning = True
         # Only buffer before the very first frame; do not stall once playback is running
         if not self.bufferWarmed:
             if self.cache.size() < 20 and self.frameNbr < self.totalFrames:
@@ -361,9 +374,11 @@ class Client:
                     photo = self.renderer.build_photo(frameData)
                     self.renderer.render(photo)
                     self.frameNbr = frameNum
-                    self.updateProgress(frameNum)
                 except Exception as e:
                     print("[Render Error]", e)
+
+        # Always update progress bar to show cache filling up
+        self.updateProgress(self.frameNbr)
 
         self.master.after(30, self.startPlayerLoop)
 
@@ -382,12 +397,12 @@ class Client:
 
         # real cache frame = max frame inside cache, not live+size
         cache_val = min(self.latestReceivedFrame, self.totalFrames)
-        print(
-            f"[PROGRESS] live={frameNum}, "
-            f"latestReceived={self.latestReceivedFrame}, "
-            f"cacheSize={self.cache.size()}, "
-            f"cacheVal={cache_val}/{self.totalFrames}"
-        )
+        # print(
+        #     f"[PROGRESS] live={frameNum}, "
+        #     f"latestReceived={self.latestReceivedFrame}, "
+        #     f"cacheSize={self.cache.size()}, "
+        #     f"cacheVal={cache_val}/{self.totalFrames}"
+        # )
         live_frac = live_val / self.totalFrames
         cache_frac = cache_val / self.totalFrames
 

@@ -1,17 +1,18 @@
 import os
 import subprocess
+import sys
 
 server_process = None   # <<< thêm dòng này
 
 def run_server():
     global server_process
     print("Starting RTSP Server on port 5544...")
-    server_process = subprocess.Popen(["python", "Server.py", "5544"])
+    server_process = subprocess.Popen([sys.executable, "Server.py", "5544"])
     print("Server started.\n")
 
 def run_client():
     print("Starting RTP Client...")
-    subprocess.Popen(["python", "ClientLauncher.py", "localhost", "5544", "5004", "movie.Mjpeg"])
+    subprocess.Popen([sys.executable, "ClientLauncher.py", "localhost", "5544", "5004", "movie.Mjpeg"])
     print("Client started.\n")
 
 def stop_server():
