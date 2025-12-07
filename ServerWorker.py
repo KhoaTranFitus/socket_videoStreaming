@@ -148,7 +148,7 @@ class ServerWorker:
 	def sendRtp(self):
 		"""Send RTP packets over UDP (single packet per frame)."""
 		# Target ~60 fps to speed up playback
-		frame_interval = 0.03
+		frame_interval = 0.04
 		next_send = time()
 		while True:
 			if self.clientInfo['event'].isSet():
