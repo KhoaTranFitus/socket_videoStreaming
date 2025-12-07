@@ -42,7 +42,6 @@ class Client:
         self.requestSent = -1
         
         self.isPaused = False
-        self.isPaused = False
         self.maxCacheSize = 2000  # frames (increased for buffering)
 
         # playback state
@@ -50,13 +49,10 @@ class Client:
         self.totalFrames = 0
  
         self.latestReceivedFrame = 0
-        self.latestReceivedFrame = 0
         self.bufferWarmed = False
         self.playerRunning = False
 
         # modules
-        self.hdMode = False
-        self.hd = HDHandler()
         self.hdMode = False
         self.hd = HDHandler()
         self.cache = CacheManager(max_size=self.maxCacheSize)        
