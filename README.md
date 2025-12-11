@@ -18,3 +18,6 @@ Enter 2 to run client
 Enter 3 to exit
 </p>
 
+<p style="font-size:18px; font-weight:600; color:#333;">
+👉 Name's HD video: <b>movie_HD.Mjpeg</b>
+</p>
