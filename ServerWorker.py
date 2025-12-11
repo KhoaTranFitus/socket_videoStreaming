@@ -153,8 +153,6 @@ class ServerWorker:
 		while True:
 			if self.clientInfo['event'].isSet():
 				break
-			# print ("Sending frame number:", self.clientInfo['videoStream'].frameNbr())
-			# print("Sending frame number:", self.clientInfo['videoStream'].frameNbr())
 			data = self.clientInfo['videoStream'].nextFrame()
 
 			if data:
